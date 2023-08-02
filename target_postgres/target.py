@@ -5,12 +5,12 @@ from pathlib import PurePath
 
 import jsonschema
 from singer_sdk import typing as th
-from singer_sdk.target_base import Target
+from singer_sdk.target_base import SQLTarget
 
 from target_postgres.sinks import PostgresSink
 
 
-class TargetPostgres(Target):
+class TargetPostgres(SQLTarget):
     """Target for Postgres."""
 
     def __init__(
@@ -18,6 +18,7 @@ class TargetPostgres(Target):
         config: dict | PurePath | str | list[PurePath | str] | None = None,
         parse_env_config: bool = False,
         validate_config: bool = True,
+        setup_mapper: bool = True,
     ) -> None:
         """Initialize the target.
 
@@ -33,6 +34,7 @@ class TargetPostgres(Target):
             config=config,
             parse_env_config=parse_env_config,
             validate_config=validate_config,
+            setup_mapper=setup_mapper,
         )
         # There's a few ways to do this in JSON Schema but it is schema draft dependent.
         # https://stackoverflow.com/questions/38717933/jsonschema-attribute-conditionally-required # noqa: E501
@@ -337,13 +339,3 @@ class TargetPostgres(Target):
                 f"Exception is being thrown for stream_name: {stream_name}"
             )
             raise e
-
-    def _process_schema_message(self, message_dict: dict) -> None:
-        """Process a SCHEMA messages.
-
-        Args:
-            message_dict: The newly received schema message.
-        """
-        self._assert_line_requires(message_dict, requires={"stream", "schema"})
-        self._assert_line_requires(message_dict["schema"], requires={"properties"})
-        super()._process_schema_message(message_dict)

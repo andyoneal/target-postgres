@@ -20,8 +20,7 @@ class PostgresSink(SQLSink):
 
     def __init__(self, target, *args, **kwargs):
         """Initialize SQL Sink. See super class for more details."""
-        connector = PostgresConnector(config=dict(target.config))
-        super().__init__(target=target, connector=connector, *args, **kwargs)
+        super().__init__(target=target, *args, **kwargs)
         self.temp_table_name = self.generate_temp_table_name()
 
     @property
@@ -46,14 +45,12 @@ class PostgresSink(SQLSink):
             self.append_only = False
         if self.schema_name:
             self.connector.prepare_schema(self.schema_name)
-        with self.connector._connect() as connection:
-            self.connector.prepare_table(
-                full_table_name=self.full_table_name,
-                schema=self.schema,
-                primary_keys=self.key_properties,
-                connection=connection,
-                as_temp_table=False,
-            )
+        self.connector.prepare_table(
+            full_table_name=self.full_table_name,
+            schema=self.schema,
+            primary_keys=self.key_properties,
+            as_temp_table=False,
+        )
 
     def process_batch(self, context: dict) -> None:
         """Process a batch with the given batch context.
@@ -65,7 +62,7 @@ class PostgresSink(SQLSink):
             context: Stream partition or context dictionary.
         """
         # Use one connection so we do this all in a single transaction
-        with self.connector._connect() as connection:
+        with self.connector._connect() as connection, connection.begin():
             # Check structure of table
             table: sqlalchemy.Table = self.connector.prepare_table(
                 full_table_name=self.full_table_name,
@@ -115,7 +112,7 @@ class PostgresSink(SQLSink):
         schema: dict,
         records: Iterable[Dict[str, Any]],
         primary_keys: List[str],
-        connection: sqlalchemy.engine.Connection,
+        connection: sqlalchemy.engine.Connection | None = None,
     ) -> Optional[int]:
         """Bulk insert records to an existing destination table.
 
@@ -166,7 +163,11 @@ class PostgresSink(SQLSink):
                 for column in columns:
                     insert_record[column.name] = record.get(column.name)
                 data_to_insert.append(insert_record)
-        connection.execute(insert, data_to_insert)
+        if connection:
+            connection.execute(insert, data_to_insert)
+        else:
+            with self.connector._connect() as connection, connection.begin():
+                connection.execute(insert, data_to_insert)
         return True
 
     def upsert(
@@ -175,7 +176,7 @@ class PostgresSink(SQLSink):
         to_table: sqlalchemy.Table,
         schema: dict,
         join_keys: List[Column],
-        connection: sqlalchemy.engine.Connection,
+        connection: sqlalchemy.engine.Connection | None = None,
     ) -> Optional[int]:
         """Merge upsert data from one table to another.
 
@@ -196,7 +197,11 @@ class PostgresSink(SQLSink):
             insert_stmt = to_table.insert().from_select(
                 names=from_table.columns, select=select_stmt
             )
-            connection.execute(insert_stmt)
+            if connection:
+                connection.execute(insert_stmt)
+            else:
+                with self.connector._connect() as connection, connection.begin():
+                    connection.execute(insert_stmt)
         else:
             join_predicates = []
             for key in join_keys:
@@ -220,8 +225,11 @@ class PostgresSink(SQLSink):
             insert_stmt = insert(to_table).from_select(
                 names=from_table.columns, select=select_stmt
             )
-
-            connection.execute(insert_stmt)
+            if connection:
+                connection.execute(insert_stmt)
+            else:
+                with self.connector._connect() as connection, connection.begin():
+                    connection.execute(insert_stmt)
 
             # Update
             where_condition = join_condition
@@ -234,7 +242,11 @@ class PostgresSink(SQLSink):
             update_stmt = (
                 update(from_table).where(where_condition).values(update_columns)
             )
-            connection.execute(update_stmt)
+            if connection:
+                connection.execute(update_stmt)
+            else:
+                with self.connector._connect() as connection, connection.begin():
+                    connection.execute(update_stmt)
 
         return None
 
@@ -257,7 +269,7 @@ class PostgresSink(SQLSink):
         self,
         full_table_name: str,
         columns: List[Column],
-    ) -> Union[str, Executable]:
+    ) -> str | Executable:
         """Generate an insert statement for the given records.
 
         Args:
@@ -274,36 +286,6 @@ class PostgresSink(SQLSink):
     def conform_name(self, name: str, object_type: Optional[str] = None) -> str:
         """Conforming names of tables, schemas, column names."""
         return name
-
-    @property
-    def schema_name(self) -> Optional[str]:
-        """Return the schema name or `None` if using names with no schema part.
-
-                Note that after the next SDK release (after 0.14.0) we can remove this
-                as it's already upstreamed.
-
-        Returns:
-            The target schema name.
-        """
-        # Look for a default_target_scheme in the configuraion fle
-        default_target_schema: str = self.config.get("default_target_schema", None)
-        parts = self.stream_name.split("-")
-
-        # 1) When default_target_scheme is in the configuration use it
-        # 2) if the streams are in <schema>-<table> format use the
-        #    stream <schema>
-        # 3) Return None if you don't find anything
-        if default_target_schema:
-            return default_target_schema
-
-        if len(parts) in {2, 3}:
-            # Stream name is a two-part or three-part identifier.
-            # Use the second-to-last part as the schema name.
-            stream_schema = self.conform_name(parts[-2], "schema")
-            return stream_schema
-
-        # Schema name not detected.
-        return None
 
     def activate_version(self, new_version: int) -> None:
         """Bump the active version of the target table.
@@ -339,11 +321,14 @@ class PostgresSink(SQLSink):
 
         self.logger.info("Hard delete: %s", self.config.get("hard_delete"))
         if self.config["hard_delete"] is True:
-            self.connection.execute(
-                f'DELETE FROM "{self.schema_name}"."{self.table_name}" '
-                f"WHERE {self.version_column_name} <= {new_version} "
-                f"OR {self.version_column_name} IS NULL"
-            )
+            with self.connector._connect() as connection, connection.begin():
+                connection.execute(
+                    sqlalchemy.text(
+                        f'DELETE FROM "{self.schema_name}"."{self.table_name}" '
+                        f"WHERE {self.version_column_name} <= {new_version} "
+                        f"OR {self.version_column_name} IS NULL"
+                    )
+                )
             return
 
         if not self.connector.column_exists(
@@ -367,5 +352,5 @@ class PostgresSink(SQLSink):
             bindparam("deletedate", value=deleted_at, type_=datetime_type),
             bindparam("version", value=new_version, type_=integer_type),
         )
-        with self.connector._connect() as connection:
+        with self.connector._connect() as connection, connection.begin():
             connection.execute(query)

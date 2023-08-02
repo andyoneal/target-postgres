@@ -80,7 +80,7 @@ class PostgresConnector(SQLConnector):
         full_table_name: str,
         schema: dict,
         primary_keys: list[str],
-        connection: sqlalchemy.engine.Connection,
+        connection: sqlalchemy.engine.Connection | None = None,
         partition_keys: list[str] | None = None,
         as_temp_table: bool = False,
     ) -> sqlalchemy.Table:
@@ -94,7 +94,7 @@ class PostgresConnector(SQLConnector):
             as_temp_table: True to create a temp table.
         """
         _, schema_name, table_name = self.parse_full_table_name(full_table_name)
-        meta = sqlalchemy.MetaData(bind=connection, schema=schema_name)
+        meta = sqlalchemy.MetaData(schema=schema_name)
         table: sqlalchemy.Table = None
         if not self.table_exists(full_table_name=full_table_name):
             table = self.create_empty_table(
@@ -107,7 +107,7 @@ class PostgresConnector(SQLConnector):
                 connection=connection,
             )
             return table
-        meta.reflect(only=[table_name])
+        meta.reflect(connection or self._engine, only=[table_name])
         table = meta.tables[
             full_table_name
         ]  # So we don't mess up the casing of the Table reference
@@ -126,7 +126,7 @@ class PostgresConnector(SQLConnector):
         self,
         full_table_name: str,
         from_table: sqlalchemy.Table,
-        connection: sqlalchemy.engine.Connection,
+        connection: sqlalchemy.engine.Connection | None = None,
         as_temp_table: bool = False,
     ) -> sqlalchemy.Table:
         """Copy table structure.
@@ -137,7 +137,7 @@ class PostgresConnector(SQLConnector):
             as_temp_table: True to create a temp table.
         """
         _, schema_name, table_name = self.parse_full_table_name(full_table_name)
-        meta = sqlalchemy.MetaData(bind=connection, schema=schema_name)
+        meta = sqlalchemy.MetaData(schema=schema_name)
         new_table: sqlalchemy.Table = None
         columns = []
         if self.table_exists(full_table_name=full_table_name):
@@ -148,25 +148,12 @@ class PostgresConnector(SQLConnector):
             new_table = sqlalchemy.Table(
                 table_name, meta, *columns, prefixes=["TEMPORARY"]
             )
-            new_table.create(bind=connection)
+            new_table.create(connection or self._engine)
             return new_table
         else:
             new_table = sqlalchemy.Table(table_name, meta, *columns)
-            new_table.create(bind=connection)
+            new_table.create(connection or self._engine)
             return new_table
-
-    def create_sqlalchemy_connection(self) -> sqlalchemy.engine.Connection:
-        """Return a new SQLAlchemy connection using the provided config.
-
-        Read more details about why server side cursors don't work on postgres here.
-        DML/DDL doesn't work with this being on according to these docs
-
-        https://docs.sqlalchemy.org/en/14/core/connections.html#using-server-side-cursors-a-k-a-stream-results
-
-        Returns:
-            A newly created SQLAlchemy engine object.
-        """
-        return self.create_sqlalchemy_engine().connect()
 
     @contextmanager
     def _connect(self) -> t.Iterator[sqlalchemy.engine.Connection]:
@@ -174,13 +161,20 @@ class PostgresConnector(SQLConnector):
             yield conn
 
     def drop_table(
-        self, table: sqlalchemy.Table, connection: sqlalchemy.engine.Connection
+        self,
+        table: sqlalchemy.Table,
+        connection: sqlalchemy.engine.Connection | None = None,
     ):
         """Drop table data."""
-        table.drop(bind=connection)
+        table.drop(connection or self._engine)
 
     def clone_table(
-        self, new_table_name, table, metadata, connection, temp_table
+        self,
+        new_table_name,
+        table,
+        metadata,
+        temp_table,
+        connection: sqlalchemy.engine.Connection | None = None,
     ) -> sqlalchemy.Table:
         """Clone a table."""
         new_columns = []
@@ -197,8 +191,7 @@ class PostgresConnector(SQLConnector):
             )
         else:
             new_table = sqlalchemy.Table(new_table_name, metadata, *new_columns)
-        with self._connect() as connection:
-            new_table.create(bind=connection)
+        new_table.create(connection or self._engine)
         return new_table
 
     @staticmethod
@@ -307,7 +300,7 @@ class PostgresConnector(SQLConnector):
         table_name: str,
         meta: sqlalchemy.MetaData,
         schema: dict,
-        connection: sqlalchemy.engine.Connection,
+        connection: sqlalchemy.engine.Connection | None = None,
         primary_keys: list[str] | None = None,
         partition_keys: list[str] | None = None,
         as_temp_table: bool = False,
@@ -348,11 +341,11 @@ class PostgresConnector(SQLConnector):
             new_table = sqlalchemy.Table(
                 table_name, meta, *columns, prefixes=["TEMPORARY"]
             )
-            new_table.create(bind=connection)
+            new_table.create(connection or self._engine)
             return new_table
 
         new_table = sqlalchemy.Table(table_name, meta, *columns)
-        new_table.create(bind=connection)
+        new_table.create(connection or self._engine)
         return new_table
 
     def prepare_column(
@@ -361,7 +354,7 @@ class PostgresConnector(SQLConnector):
         table: sqlalchemy.Table,
         column_name: str,
         sql_type: sqlalchemy.types.TypeEngine,
-        connection: sqlalchemy.engine.Connection,
+        connection: sqlalchemy.engine.Connection | None = None,
     ) -> None:
         """Adapt target table to provided schema if possible.
 
@@ -397,7 +390,7 @@ class PostgresConnector(SQLConnector):
         table_name: str,
         column_name: str,
         sql_type: sqlalchemy.types.TypeEngine,
-        connection: sqlalchemy.engine.Connection,
+        connection: sqlalchemy.engine.Connection | None = None,
     ) -> None:
         """Create a new column.
 
@@ -419,7 +412,11 @@ class PostgresConnector(SQLConnector):
             column_name=column_name,
             column_type=sql_type,
         )
-        connection.execute(column_add_ddl)
+        if connection:
+            connection.execute(column_add_ddl)
+        else:
+            with self._connect() as connection, connection.begin():
+                connection.execute(column_add_ddl)
 
     def get_column_add_ddl(
         self,
@@ -460,7 +457,7 @@ class PostgresConnector(SQLConnector):
         table_name: str,
         column_name: str,
         sql_type: sqlalchemy.types.TypeEngine,
-        connection: sqlalchemy.engine.Connection,
+        connection: sqlalchemy.engine.Connection | None = None,
     ) -> None:
         """Adapt table column type to support the new JSON schema type.
 
@@ -513,7 +510,11 @@ class PostgresConnector(SQLConnector):
             column_name=column_name,
             column_type=compatible_sql_type,
         )
-        connection.execute(alter_column_ddl)
+        if connection:
+            connection.execute(alter_column_ddl)
+        else:
+            with self._connect() as connection, connection.begin():
+                connection.execute(alter_column_ddl)
 
     def get_column_alter_ddl(
         self,

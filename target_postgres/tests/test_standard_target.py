@@ -274,8 +274,10 @@ def test_no_primary_keys(postgres_config_no_ssl, engine):
     table_name = "test_no_pk"
     postgres_target = TargetPostgres(config=postgres_config_no_ssl)
     full_table_name = postgres_target.config["default_target_schema"] + "." + table_name
-    with engine.connect() as connection:
-        result = connection.execute(f"DROP TABLE IF EXISTS {full_table_name}")
+    with engine.connect() as connection, connection.begin():
+        result = connection.execute(
+            sqlalchemy.text(f"DROP TABLE IF EXISTS {full_table_name}")
+        )
     file_name = f"{table_name}.singer"
     singer_file_to_target(file_name, postgres_target)
 
@@ -290,7 +292,7 @@ def test_no_primary_keys(postgres_config_no_ssl, engine):
 
     # Will populate us with 22 records, we run this twice
     with engine.connect() as connection:
-        result = connection.execute(f"SELECT * FROM {full_table_name}")
+        result = connection.execute(sqlalchemy.text(f"SELECT * FROM {full_table_name}"))
         assert result.rowcount == 16
 
 
@@ -348,9 +350,11 @@ def test_anyof(postgres_config_no_ssl, engine):
     file_name = f"{table_name}.singer"
     schema = postgres_config_no_ssl["default_target_schema"]
     singer_file_to_target(file_name, TargetPostgres(config=postgres_config_no_ssl))
-    with engine.connect() as connection:
-        meta = sqlalchemy.MetaData(bind=connection)
-        table = sqlalchemy.Table("commits", meta, schema=schema, autoload=True)
+    with engine.connect() as connection, connection.begin():
+        meta = sqlalchemy.MetaData()
+        table = sqlalchemy.Table(
+            "commits", meta, schema=schema, autoload_with=connection
+        )
         for column in table.c:
             # {"type":"string"}
             if column.name == "id":
@@ -393,24 +397,28 @@ def test_activate_version_hard_delete(postgres_config_no_ssl, engine):
     postgres_config_hard_delete_true["hard_delete"] = True
     pg_hard_delete_true = TargetPostgres(config=postgres_config_hard_delete_true)
     singer_file_to_target(file_name, pg_hard_delete_true)
-    with engine.connect() as connection:
-        result = connection.execute(f"SELECT * FROM {full_table_name}")
+    with engine.connect() as connection, connection.begin():
+        result = connection.execute(sqlalchemy.text(f"SELECT * FROM {full_table_name}"))
         assert result.rowcount == 7
         # Add a record like someone would if they weren't using the tap target combo
         result = connection.execute(
-            f"INSERT INTO {full_table_name}(code, \"name\") VALUES('Manual1', 'Meltano')"
+            sqlalchemy.text(
+                f"INSERT INTO {full_table_name}(code, \"name\") VALUES('Manual1', 'Meltano')"
+            )
         )
         result = connection.execute(
-            f"INSERT INTO {full_table_name}(code, \"name\") VALUES('Manual2', 'Meltano')"
+            sqlalchemy.text(
+                f"INSERT INTO {full_table_name}(code, \"name\") VALUES('Manual2', 'Meltano')"
+            )
         )
-        result = connection.execute(f"SELECT * FROM {full_table_name}")
+        result = connection.execute(sqlalchemy.text(f"SELECT * FROM {full_table_name}"))
         assert result.rowcount == 9
 
     singer_file_to_target(file_name, pg_hard_delete_true)
 
     # Should remove the 2 records we added manually
-    with engine.connect() as connection:
-        result = connection.execute(f"SELECT * FROM {full_table_name}")
+    with engine.connect() as connection, connection.begin():
+        result = connection.execute(sqlalchemy.text(f"SELECT * FROM {full_table_name}"))
         assert result.rowcount == 7
 
 
@@ -419,35 +427,43 @@ def test_activate_version_soft_delete(postgres_config_no_ssl, engine):
     table_name = "test_activate_version_soft"
     file_name = f"{table_name}.singer"
     full_table_name = postgres_config_no_ssl["default_target_schema"] + "." + table_name
-    with engine.connect() as connection:
-        result = connection.execute(f"DROP TABLE IF EXISTS {full_table_name}")
+    with engine.connect() as connection, connection.begin():
+        result = connection.execute(
+            sqlalchemy.text(f"DROP TABLE IF EXISTS {full_table_name}")
+        )
     postgres_config_soft_delete = copy.deepcopy(postgres_config_no_ssl)
     postgres_config_soft_delete["hard_delete"] = False
     pg_soft_delete = TargetPostgres(config=postgres_config_soft_delete)
     singer_file_to_target(file_name, pg_soft_delete)
 
-    with engine.connect() as connection:
-        result = connection.execute(f"SELECT * FROM {full_table_name}")
+    with engine.connect() as connection, connection.begin():
+        result = connection.execute(sqlalchemy.text(f"SELECT * FROM {full_table_name}"))
         assert result.rowcount == 7
         # Add a record like someone would if they weren't using the tap target combo
         result = connection.execute(
-            f"INSERT INTO {full_table_name}(code, \"name\") VALUES('Manual1', 'Meltano')"
+            sqlalchemy.text(
+                f"INSERT INTO {full_table_name}(code, \"name\") VALUES('Manual1', 'Meltano')"
+            )
         )
         result = connection.execute(
-            f"INSERT INTO {full_table_name}(code, \"name\") VALUES('Manual2', 'Meltano')"
+            sqlalchemy.text(
+                f"INSERT INTO {full_table_name}(code, \"name\") VALUES('Manual2', 'Meltano')"
+            )
         )
-        result = connection.execute(f"SELECT * FROM {full_table_name}")
+        result = connection.execute(sqlalchemy.text(f"SELECT * FROM {full_table_name}"))
         assert result.rowcount == 9
 
     singer_file_to_target(file_name, pg_soft_delete)
 
     # Should have all records including the 2 we added manually
-    with engine.connect() as connection:
-        result = connection.execute(f"SELECT * FROM {full_table_name}")
+    with engine.connect() as connection, connection.begin():
+        result = connection.execute(sqlalchemy.text(f"SELECT * FROM {full_table_name}"))
         assert result.rowcount == 9
 
         result = connection.execute(
-            f"SELECT * FROM {full_table_name} where _sdc_deleted_at is NOT NULL"
+            sqlalchemy.text(
+                f"SELECT * FROM {full_table_name} where _sdc_deleted_at is NOT NULL"
+            )
         )
         assert result.rowcount == 2
 
@@ -457,29 +473,35 @@ def test_activate_version_deletes_data_properly(postgres_config_no_ssl, engine):
     table_name = "test_activate_version_deletes_data_properly"
     file_name = f"{table_name}.singer"
     full_table_name = postgres_config_no_ssl["default_target_schema"] + "." + table_name
-    with engine.connect() as connection:
-        result = connection.execute(f"DROP TABLE IF EXISTS {full_table_name}")
+    with engine.connect() as connection, connection.begin():
+        result = connection.execute(
+            sqlalchemy.text(f"DROP TABLE IF EXISTS {full_table_name}")
+        )
 
     postgres_config_soft_delete = copy.deepcopy(postgres_config_no_ssl)
     postgres_config_soft_delete["hard_delete"] = True
     pg_hard_delete = TargetPostgres(config=postgres_config_soft_delete)
     singer_file_to_target(file_name, pg_hard_delete)
     # Will populate us with 7 records
-    with engine.connect() as connection:
+    with engine.connect() as connection, connection.begin():
         result = connection.execute(
-            f"INSERT INTO {full_table_name} (code, \"name\") VALUES('Manual1', 'Meltano')"
+            sqlalchemy.text(
+                f"INSERT INTO {full_table_name} (code, \"name\") VALUES('Manual1', 'Meltano')"
+            )
         )
         result = connection.execute(
-            f"INSERT INTO {full_table_name} (code, \"name\") VALUES('Manual2', 'Meltano')"
+            sqlalchemy.text(
+                f"INSERT INTO {full_table_name} (code, \"name\") VALUES('Manual2', 'Meltano')"
+            )
         )
-        result = connection.execute(f"SELECT * FROM {full_table_name}")
+        result = connection.execute(sqlalchemy.text(f"SELECT * FROM {full_table_name}"))
         assert result.rowcount == 9
 
     # Only has a schema and one activate_version message, should delete all records as it's a higher version than what's currently in the table
     file_name = f"{table_name}_2.singer"
     singer_file_to_target(file_name, pg_hard_delete)
-    with engine.connect() as connection:
-        result = connection.execute(f"SELECT * FROM {full_table_name}")
+    with engine.connect() as connection, connection.begin():
+        result = connection.execute(sqlalchemy.text(f"SELECT * FROM {full_table_name}"))
         assert result.rowcount == 0
 
 
