@@ -9,6 +9,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 import sqlalchemy
+from singer_sdk.exceptions import MissingKeyPropertiesError
 from singer_sdk.testing import sync_end_to_end
 from sqlalchemy import create_engine
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -151,7 +152,7 @@ def test_port_default_config():
 
     engine: sqlalchemy.engine.Engine = connector._engine
     assert (
-        str(engine.url)
+        engine.url.render_as_string(hide_password=False)
         == f"{dialect_driver}://{user}:{password}@{host}:5432/{database}"
     )
 
@@ -176,7 +177,7 @@ def test_port_config():
 
     engine: sqlalchemy.engine.Engine = connector._engine
     assert (
-        str(engine.url)
+        engine.url.render_as_string(hide_password=False)
         == f"{dialect_driver}://{user}:{password}@{host}:5433/{database}"
     )
 
@@ -214,10 +215,9 @@ def test_invalid_schema(postgres_target):
 
 
 def test_record_missing_key_property(postgres_target):
-    with pytest.raises(Exception) as e:
+    with pytest.raises(MissingKeyPropertiesError) as e:
         file_name = "record_missing_key_property.singer"
         singer_file_to_target(file_name, postgres_target)
-    assert "Primary key not found in record." in str(e.value)
 
 
 def test_record_missing_required_property(postgres_target):
