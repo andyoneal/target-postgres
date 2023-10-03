@@ -33,6 +33,7 @@ packages = [
 [tool.poetry.dependencies]
 python = "<3.12,>=3.7.1"
 requests = "^2.25.1"
+fastjsonschema = "2.18.0"
 singer-sdk = ">=0.28,<0.32"
 psycopg2-binary = "2.9.7"
 sqlalchemy = ">=2.0,<3.0"

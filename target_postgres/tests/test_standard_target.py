@@ -413,6 +413,12 @@ def test_tap_appl(postgres_target):
     singer_file_to_target(file_name, postgres_target)
 
 
+def test_tap_sfdc_tasks(postgres_target):
+    """Expect to fail with ValueError due to primary key https://github.com/MeltanoLabs/target-postgres/issues/54"""
+    file_name = "test_tasks.singer"
+    singer_file_to_target(file_name, postgres_target)
+
+
 def test_tap_countries(postgres_target):
     file_name = "tap_countries.singer"
     singer_file_to_target(file_name, postgres_target)

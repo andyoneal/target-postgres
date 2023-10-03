@@ -3,6 +3,7 @@
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Union
 
+import fastjsonschema
 import sqlalchemy
 from pendulum import now
 from singer_sdk.sinks import SQLSink
@@ -18,10 +19,11 @@ class PostgresSink(SQLSink):
 
     connector_class = PostgresConnector
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, schema, *args, **kwargs):
         """Initialize SQL Sink. See super class for more details."""
-        super().__init__(*args, **kwargs)
+        super().__init__(schema=schema, *args, **kwargs)
         self.temp_table_name = self.generate_temp_table_name()
+        self._fastvalidator = fastjsonschema.compile(schema)
 
     @property
     def append_only(self) -> bool:
@@ -32,6 +34,24 @@ class PostgresSink(SQLSink):
     def append_only(self, value: bool) -> None:
         """Set the append_only attribute."""
         self._append_only = value
+
+    def _validate_and_parse(self, record: dict) -> dict:
+        """Validate or repair the record, parsing to python-native types as needed.
+
+        Args:
+            record: Individual record in the stream.
+
+        Returns:
+            TODO
+        """
+        self._fastvalidator(record)
+        # self._validator.validate(record)
+        self._parse_timestamps_in_record(
+            record=record,
+            schema=self.schema,
+            treatment=self.datetime_error_treatment,
+        )
+        return record
 
     def setup(self) -> None:
         """Set up Sink.
